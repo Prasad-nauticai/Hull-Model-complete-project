@@ -2,12 +2,12 @@
 .env
 .env.local
 
-# Model files — too large for GitHub (use Releases)
-*.pt
-*.pth
-*.onnx
-*.engine
-*.trt
+# Model files — tracked via Git LFS
+# *.pt files ARE committed via LFS (see .gitattributes)
+# Only exclude untrained/unused models
+final_hull_best.pt
+best.pt
+"best (2).pt"
 
 # Python
 __pycache__/
