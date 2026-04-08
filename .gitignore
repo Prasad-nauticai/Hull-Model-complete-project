@@ -1,0 +1,81 @@
+# Environment — never commit credentials
+.env
+
+# Model files — too large for GitHub (use Releases)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Test/temp files
+test_hull_video.mp4
+test_hull_large.mp4
+test_annotated_output.jpg
+real_test.jpg
+*.log
+backend.log
+frontend.log
+backend_runtime.*.log
+
+# Temp scripts (one-time use)
+check_models.py
+check_classes.py
+check_healthy_surface.py
+test_pipeline.py
+test_large_video.py
+test_each_model.py
+test_detect.py
+test_batch_api.py
+patch_3d.py
+patch_logo.py
+logo_encode.py
+logo_b64.txt
+logo_b64_uri.txt
+convert_model.py
+
+# Large zip/archives
+*.zip
+nauticai_production.zip
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Runs (YOLO output)
+runs/
+
+# Uploads
+uploads/
+
+# Build artifacts
+build_log.txt
+clog.json
+cloud_shell_error.txt
+
+# Species model training artifacts
+species_models-*/
+My\ Project-*/
+
+# FInalUI (Streamlit — separate project)
+FInalUI/
+
+# nauticai_production (old snapshot — not needed)
+nauticai_production/

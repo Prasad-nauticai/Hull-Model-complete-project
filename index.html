@@ -65,7 +65,7 @@
       </div>
       <h1 class="hero-headline">
         Clear Reports for<br />
-        <span class="gradient-text">Underwater Hull Inspection</span>
+        <span class="gradient-text">Underwater Hull Inspection - Hull Data</span>
       </h1>
       <p class="hero-subtext">
         We help you inspect hulls and underwater structures with easy-to-read results. Find corrosion, marine growth,
@@ -128,13 +128,13 @@
           </svg>
         </div>
         <div class="detection-box db-1">
-          <span class="db-label">Corrosion 94%</span>
+          <span class="db-label">Biofouling 91%</span>
         </div>
         <div class="detection-box db-2">
-          <span class="db-label">Marine Growth 88%</span>
+          <span class="db-label">Paint Peel 88%</span>
         </div>
         <div class="detection-box db-3">
-          <span class="db-label">Healthy 99%</span>
+          <span class="db-label">Hull 99%</span>
         </div>
       </div>
     </div>
@@ -305,9 +305,15 @@
               <path d="M20 24 L22 26 L28 20" stroke="#00b4a0" stroke-width="2.5" />
             </svg>
           </div>
-          <h3 class="step-title">Inspection Findings</h3>
-          <p class="step-desc">We highlight corrosion, marine growth, debris, and damage with clear labels and
-            confidence scores.</p>
+          <h3 class="step-title">Intelligent Vision Pipeline</h3>
+          <p class="step-desc" style="font-size:13px; margin-top:10px;">
+            <strong style="color:var(--teal);">Stage 1:</strong> Object Detection identifies biological growth &
+            corrosion.<br>
+            <strong style="color:var(--teal);">Stage 2:</strong> Semantic Segmentation analyzes surface area
+            coverage.<br>
+            <strong style="color:var(--teal);">Stage 3:</strong> Species Classification (ResNet-50) categorizes
+            organisms.
+          </p>
         </div>
         <div class="step-card glass-card">
           <div class="step-number">03</div>
@@ -456,34 +462,104 @@
 
           <!-- Results State -->
           <div class="results-content" id="results-content" style="display:none;">
-            <div class="annotated-preview">
-              <div class="annotated-label">Annotated Output</div>
-              <div class="annotated-canvas" id="annotated-canvas">
-                <canvas id="result-canvas" width="400" height="280"></canvas>
-                <div class="scan-line"></div>
-              </div>
-              <!-- Batch gallery nav (hidden for single image) -->
-              <div id="gallery-nav" style="display:none;margin-top:10px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                  <button id="gallery-prev" onclick="galleryNav(-1)"
-                    style="padding:6px 14px;background:var(--bg-2);border:1px solid var(--teal-border);color:var(--teal);font-family:var(--font-mono);font-size:11px;cursor:pointer;border-radius:4px;">◀
-                    Prev</button>
-                  <span id="gallery-counter" style="font-family:var(--font-mono);font-size:12px;color:var(--text-2);">1
-                    / 1</span>
-                  <button id="gallery-next" onclick="galleryNav(1)"
-                    style="padding:6px 14px;background:var(--bg-2);border:1px solid var(--teal-border);color:var(--teal);font-family:var(--font-mono);font-size:11px;cursor:pointer;border-radius:4px;">Next
-                    ▶</button>
+            <!-- 2D / 3D View Tabs -->
+            <div class="view-tabs" style="display:flex; gap:10px; margin-bottom:15px;">
+              <button id="tab-2d" class="tab-btn active" onclick="switchViewTab('2d')"
+                style="flex:1; padding:8px; background:var(--bg-2); border:1px solid var(--teal); border-radius:4px; color:var(--teal); font-weight:bold; cursor:pointer;">2D
+                Annotated View</button>
+              <button id="tab-3d" class="tab-btn" onclick="switchViewTab('3d')"
+                style="flex:1; padding:8px; background:var(--bg-panel); border:1px solid var(--border-color); border-radius:4px; color:var(--text-3); font-weight:normal; cursor:pointer;">3D
+                Digital Twin View</button>
+            </div>
+
+            <!-- Tab 1: 2D Output -->
+            <div id="view-2d">
+              <div class="annotated-preview">
+                <div class="annotated-label">Annotated Output (Object Detection &amp; Species Classification)</div>
+                <div class="annotated-canvas" id="annotated-canvas">
+                  <canvas id="result-canvas" width="400" height="280"></canvas>
+                  <div class="scan-line"></div>
                 </div>
-                <div id="gallery-filename"
-                  style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-3);font-family:var(--font-mono);">
+                <!-- Batch gallery nav -->
+                <div id="gallery-nav" style="display:none;margin-top:10px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <button id="gallery-prev" onclick="galleryNav(-1)"
+                      style="padding:6px 14px;background:var(--bg-2);border:1px solid var(--teal-border);color:var(--teal);font-family:var(--font-mono);font-size:11px;cursor:pointer;border-radius:4px;">◀
+                      Prev</button>
+                    <span id="gallery-counter"
+                      style="font-family:var(--font-mono);font-size:12px;color:var(--text-2);">1 / 1</span>
+                    <button id="gallery-next" onclick="galleryNav(1)"
+                      style="padding:6px 14px;background:var(--bg-2);border:1px solid var(--teal-border);color:var(--teal);font-family:var(--font-mono);font-size:11px;cursor:pointer;border-radius:4px;">Next
+                      ▶</button>
+                  </div>
+                  <div id="gallery-filename"
+                    style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-3);font-family:var(--font-mono);">
+                  </div>
                 </div>
               </div>
             </div>
-            <div class="detections-list" id="detections-list">
+
+            <!-- Tab 2: 3D Output -->
+            <div id="view-3d" style="display:none;">
+              <div class="annotated-preview"
+                style="background:var(--bg-1); min-height:280px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px solid var(--border-color); border-radius:8px; position:relative; overflow:hidden;">
+                <div class="annotated-label" style="position:absolute; top:8px; left:8px; z-index:10;">3D Hull Asset
+                  Visualization</div>
+                <!-- Interactive 3D Placeholder -->
+                <div id="threed-container"
+                  style="width:100%; height:280px; display:flex; flex-direction:column; align-items:center; justify-content:center; perspective:1000px; position:relative;">
+                  <svg id="threed-svg" viewBox="0 0 100 60" width="160"
+                    style="opacity:0.8; filter: drop-shadow(0 0 10px rgba(0,180,160,0.3)); transform: rotateX(60deg) rotateZ(0deg); transform-style: preserve-3d; cursor: grab;">
+                    <!-- Simple Ship Hull Mockup -->
+                    <path d="M50 5 L80 15 L80 45 L50 55 L20 45 L20 15 Z" fill="none" stroke="var(--teal)"
+                      stroke-width="1.5" stroke-linejoin="round" />
+                    <path d="M50 5 L50 55 M20 15 L80 15 M20 45 L80 45 M20 15 L50 5 M80 15 L50 5"
+                      stroke="var(--teal-border)" stroke-width="0.5" />
+                    <!-- Target blips injected by JS -->
+                    <g id="threed-blips"></g>
+                  </svg>
+                  <div
+                    style="position:absolute; bottom:15px; font-family:var(--font-mono); font-size:11px; color:var(--teal); background:rgba(0,0,0,0.5); padding:4px 8px; border-radius:4px;">
+                    Mapping <span id="threed-batch-count" style="font-weight:bold; color:#fff;">0</span> detections via
+                    Pipeline...
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- NDT Testing Form (UWILD) -->
+            <div class="ndt-section"
+              style="margin-top:15px; padding:15px; border-radius:8px; background:rgba(11, 30, 45, 0.4); border:1px dashed var(--teal-border);">
+              <div
+                style="font-size:12px; font-weight:600; color:var(--text-1); margin-bottom:12px; display:flex; align-items:center; gap:6px;">
+                <svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+                UWILD NDT Sensor Inputs
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                  <label style="display:block; font-size:11px; color:var(--text-2); margin-bottom:4px;">Hull Region
+                    (e.g., Aft Starboard)</label>
+                  <input type="text" id="ndt-hull-part" placeholder="Enter target region..."
+                    style="width:100%; padding:8px; background:var(--bg-1); border:1px solid rgb(30, 58, 80); color:#fff; border-radius:4px; font-size:12px; outline:none;"
+                    onfocus="this.style.borderColor='var(--teal)'" onblur="this.style.borderColor='rgb(30, 58, 80)'">
+                </div>
+                <div>
+                  <label style="display:block; font-size:11px; color:var(--text-2); margin-bottom:4px;">Shell Thickness
+                    (mm)</label>
+                  <input type="number" id="ndt-thickness" placeholder="e.g. 12.5" step="0.1"
+                    style="width:100%; padding:8px; background:var(--bg-1); border:1px solid rgb(30, 58, 80); color:#fff; border-radius:4px; font-size:12px; outline:none;"
+                    onfocus="this.style.borderColor='var(--teal)'" onblur="this.style.borderColor='rgb(30, 58, 80)'">
+                </div>
+              </div>
+            </div>
+
+            <div class="detections-list" id="detections-list" style="margin-top:15px;">
               <!-- Classes injected by JS -->
             </div>
-            <div class="confidence-section">
-              <div class="conf-label">Average Confidence Score</div>
+            <div class="confidence-section" style="margin-top:15px;">
+              <div class="conf-label">Average Pipeline Confidence</div>
               <div class="conf-bar-wrap">
                 <div class="conf-bar" id="conf-bar"></div>
               </div>
@@ -491,7 +567,9 @@
             </div>
             <!-- Per-object confidence boxes -->
             <div id="per-detection-boxes" style="width:100%;margin-top:8px;"></div>
-            <button class="btn-primary btn-report" id="btn-generate-report" onclick="generateReport()">
+
+            <button class="btn-primary btn-report" id="btn-generate-report" onclick="generateReport()"
+              style="margin-top:15px;">
               <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
@@ -501,6 +579,7 @@
               Generate PDF Inspection Report
             </button>
           </div>
+
         </div>
       </div>
     </div>
@@ -556,24 +635,9 @@
             <div class="risk-score">Inference: <span id="rpt-inf-time">—</span></div>
           </div>
 
-          <!-- Detection Summary -->
-          <div class="rpt-summary-grid">
-            <div class="rpt-summary-item">
-              <div class="rsi-val" id="rpt-count-corrosion" style="color:#e74c3c;">4</div>
-              <div class="rsi-label">Corrosion Zones</div>
-            </div>
-            <div class="rpt-summary-item">
-              <div class="rsi-val" id="rpt-count-growth" style="color:#f39c12;">3</div>
-              <div class="rsi-label">Marine Growth</div>
-            </div>
-            <div class="rpt-summary-item">
-              <div class="rsi-val" id="rpt-count-debris" style="color:#e67e22;">2</div>
-              <div class="rsi-label">Debris Detected</div>
-            </div>
-            <div class="rpt-summary-item">
-              <div class="rsi-val" id="rpt-count-healthy" style="color:#00b4a0;">3</div>
-              <div class="rsi-label">Healthy Surfaces</div>
-            </div>
+          <!-- Detection Summary — built dynamically from real results -->
+            <div class="rpt-summary-grid" id="rpt-summary-grid">
+            <!-- cards injected by JS -->
           </div>
 
           <!-- Annotated image in report -->
@@ -659,7 +723,8 @@
       <div class="about-layout">
         <div class="about-content">
           <span class="section-tag">About NautiCAI</span>
-          <h2 class="section-title">Making Underwater Inspection<br /><span class="gradient-text">Clear and Simple</span></h2>
+          <h2 class="section-title">Making Underwater Inspection<br /><span class="gradient-text">Clear and
+              Simple</span></h2>
           <p class="about-text">
             NautiCAI was founded to fix a simple problem: underwater inspection is slow and expensive. Our platform
             turns raw footage into clear findings in minutes.
@@ -910,9 +975,12 @@
     </div>
   </footer>
 
-  <script src="js/main.js"></script>
-  <script src="js/dashboard.js"></script>
-  <script src="js/report.js"></script>
+  <script>
+    window.API_BASE = "http://127.0.0.1:8000";
+  </script>
+  <script src="js/main.js?v=20260327d"></script>
+  <script src="js/dashboard.js?v=20260327d"></script>
+  <script src="js/report.js?v=20260327d"></script>
 </body>
 
 </html>

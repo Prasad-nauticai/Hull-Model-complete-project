@@ -3,23 +3,34 @@
    Real AI Detection via FastAPI + YOLOv8
 ═══════════════════════════════════════════════ */
 
-const API_BASE = 'http://localhost:8010';
+const API_BASE = 'http://127.0.0.1:8000';
 window.API_BASE = API_BASE;
+console.log('[NautiCAI] API_BASE =', API_BASE);
 
 
 
-/* Class colour map — matches api.py */
+/* Class colour map — covers all classes from all 3 models */
 const CLASS_COLORS = {
-    'corrosion': '#e74c3c',
-    'marine growth': '#f0a500',
-    'debris': '#e67e22',
-    'healthy surface': '#00c8b0',
-    'healthy': '#00c8b0',
+    'corrosion':   '#e74c3c',   // red
+    'biofouling':  '#f0a500',   // amber
+    'debris':      '#27ae60',   // green
+    'anode':       '#00d4e8',   // cyan
+    'paint_peel':  '#e74c3c',   // red
+    'anomaly':     '#9b59b6',   // purple
 };
 const DEFAULT_COLOR = '#7a9eb5';
 
+/* Normalize class name — unify across models */
+function normalizeClassName(name) {
+    if (!name) return name;
+    const k = name.toLowerCase().trim();
+    if (k === 'hull')          return 'corrosion';
+    if (k === 'marine_growth') return 'biofouling';
+    return k;
+}
+
 function classColor(name) {
-    return CLASS_COLORS[(name || '').toLowerCase().trim()] || DEFAULT_COLOR;
+    return CLASS_COLORS[normalizeClassName((name || '').toLowerCase().trim())] || DEFAULT_COLOR;
 }
 
 /* ── Upload drag-and-drop ─────────────────────── */
@@ -158,34 +169,59 @@ window.runAIDetection = async function () {
 
     const files = uploadedFiles.length > 0 ? uploadedFiles : [uploadedFile];
     const isBatch = files.length > 1;
+    const isVideo = files.length === 1 && files[0].type.startsWith('video/');
 
-    const emptyState = document.getElementById('empty-state');
+    const emptyState   = document.getElementById('empty-state');
     const loadingState = document.getElementById('loading-state');
-    const resultsEl = document.getElementById('results-content');
+    const resultsEl    = document.getElementById('results-content');
 
-    emptyState.style.display = 'none';
-    resultsEl.style.display = 'none';
+    emptyState.style.display   = 'none';
+    resultsEl.style.display    = 'none';
     loadingState.style.display = 'flex';
 
     const progressBar = document.getElementById('progress-bar');
-    const stageLabel = document.querySelector('.progress-stage') || { textContent: '' };
+    const stageLabel  = document.querySelector('.progress-stage') || { textContent: '' };
     progressBar.style.width = '0%';
 
     try {
         let mergedData = null;
 
-        if (isBatch) {
-            /* ── Batch: process each file sequentially ── */
-            const allDetections = [];
-            const allAnnotatedImages = [];  // { filename, image, detections }
+        if (isVideo) {
+            /* ── Single video: submit job, poll for live progress ── */
+            stageLabel.textContent = 'Uploading video...';
+            progressBar.style.width = '5%';
+
+            const formData = new FormData();
+            formData.append('file', files[0]);
+
+            const resp = await fetch(`${API_BASE}/detect`, { method: 'POST', body: formData });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+
+            const jobResp = await resp.json();
+
+            // If backend returned a job_id it's async (video) — poll for progress
+            if (jobResp.job_id) {
+                mergedData = await _pollVideoJob(jobResp.job_id, progressBar, stageLabel);
+            } else {
+                // Synchronous response (shouldn't happen for video but handle gracefully)
+                mergedData = jobResp;
+            }
+
+        } else if (isBatch) {
+            /* ── Multiple images: process sequentially ── */
+            const allDetections     = [];
+            const allAnnotatedImages = [];
             let lastMetrics = null;
-            let totalInfMs = 0;
-            let inspId = '';
+            let totalInfMs  = 0;
+            let inspId      = '';
 
             for (let i = 0; i < files.length; i++) {
                 const pct = Math.round(((i + 1) / files.length) * 95);
                 progressBar.style.width = pct + '%';
-                stageLabel.textContent = `Analyzing file ${i + 1} of ${files.length}: ${files[i].name}`;
+                stageLabel.textContent  = `Analyzing ${i + 1} of ${files.length}: ${files[i].name}`;
 
                 const formData = new FormData();
                 formData.append('file', files[i]);
@@ -200,58 +236,53 @@ window.runAIDetection = async function () {
                 const data = await response.json();
                 const fileDetections = data.detections || [];
                 allDetections.push(...fileDetections);
-
-                // Store each annotated image
                 allAnnotatedImages.push({
-                    filename: files[i].name,
-                    image: data.annotated_image || null,
+                    filename:   files[i].name,
+                    image:      data.annotated_image || null,
                     detections: fileDetections,
-                    summary: data.summary || null,
+                    summary:    data.summary || null,
                 });
-
                 lastMetrics = data.model_metrics || lastMetrics;
-                inspId = data.inspection_id || inspId;
+                inspId      = data.inspection_id || inspId;
                 totalInfMs += data.summary?.inference_time_ms || 0;
             }
 
-            // Recalculate summary from aggregated detections
             const maxConf = allDetections.length ? Math.max(...allDetections.map(d => d.confidence)) : 0;
-            const avgConf = allDetections.length ? allDetections.reduce((a, d) => a + d.confidence, 0) / allDetections.length : 0;
-            let risk = 'SAFE';
-            if (maxConf > 0.85) risk = 'HIGH';
-            else if (maxConf > 0.60) risk = 'MEDIUM';
-            else if (maxConf > 0) risk = 'LOW';
+            const avgConf = allDetections.length
+                ? allDetections.reduce((a, d) => a + d.confidence, 0) / allDetections.length : 0;
+            // Use backend risk thresholds (conf > 0.40 HIGH, > 0.25 MEDIUM, else LOW)
+            const risk = maxConf > 0.40 ? 'HIGH' : maxConf > 0.25 ? 'MEDIUM' : maxConf > 0 ? 'LOW' : 'SAFE';
 
             mergedData = {
-                inspection_id: inspId || 'BATCH-' + Date.now(),
-                detections: allDetections,
-                annotated_image: allAnnotatedImages.length > 0 ? allAnnotatedImages[0].image : null,
+                inspection_id:    inspId || 'BATCH-' + Date.now(),
+                detections:       allDetections,
+                annotated_image:  allAnnotatedImages[0]?.image || null,
                 annotated_images: allAnnotatedImages,
                 summary: {
-                    total: allDetections.length,
-                    risk_level: risk,
-                    avg_confidence: Math.round(avgConf * 10000) / 10000,
+                    total:             allDetections.length,
+                    risk_level:        risk,
+                    avg_confidence:    Math.round(avgConf * 10000) / 10000,
                     inference_time_ms: totalInfMs,
-                    files_processed: files.length,
+                    files_processed:   files.length,
                 },
-                model_metrics: lastMetrics || { precision: 0, recall: 0, map50: 0, map5095: 0 },
-                timestamp: new Date().toISOString(),
+                model_metrics: lastMetrics || { precision: null, recall: null, map50: null, map5095: null },
+                timestamp:     new Date().toISOString(),
             };
 
         } else {
-            /* ── Single file: existing flow ── */
+            /* ── Single image ── */
             const stages = [
                 { pct: 15, label: 'Uploading file...' },
-                { pct: 35, label: 'Preprocessing image...' },
-                { pct: 60, label: 'Running YOLOv8 inference...' },
-                { pct: 80, label: 'Detecting objects...' },
-                { pct: 90, label: 'Post-processing results...' },
+                { pct: 40, label: 'Preprocessing image...' },
+                { pct: 65, label: 'Running YOLOv8 inference...' },
+                { pct: 85, label: 'Classifying species...' },
+                { pct: 95, label: 'Post-processing results...' },
             ];
             let stageIdx = 0;
             const stageTimer = setInterval(() => {
                 if (stageIdx < stages.length) {
                     progressBar.style.width = stages[stageIdx].pct + '%';
-                    stageLabel.textContent = stages[stageIdx].label;
+                    stageLabel.textContent  = stages[stageIdx].label;
                     stageIdx++;
                 }
             }, 600);
@@ -266,14 +297,15 @@ window.runAIDetection = async function () {
                 const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
                 throw new Error(err.detail || `HTTP ${response.status}`);
             }
-
             mergedData = await response.json();
         }
 
         progressBar.style.width = '100%';
-        stageLabel.textContent = isBatch
-            ? `Batch complete! ${files.length} files analyzed, ${mergedData.detections.length} detections.`
-            : 'Analysis complete!';
+        stageLabel.textContent  = isVideo
+            ? `Video analysis complete! ${mergedData.summary?.frames_analyzed || 0} frames, ${mergedData.detections?.length || 0} detections.`
+            : isBatch
+                ? `Batch complete! ${files.length} files, ${mergedData.detections.length} detections.`
+                : 'Analysis complete!';
         await sleep(400);
 
         loadingState.style.display = 'none';
@@ -281,11 +313,11 @@ window.runAIDetection = async function () {
 
     } catch (err) {
         loadingState.style.display = 'none';
-        emptyState.style.display = 'flex';
-        progressBar.style.width = '0%';
+        emptyState.style.display   = 'flex';
+        progressBar.style.width    = '0%';
 
         if (err.message.includes('fetch') || err.message.includes('Failed')) {
-            showToast('API offline — showing demo results. Start api.py to use real detection.', 'warn');
+            showToast(`API offline at ${API_BASE} — showing demo results. Start backend and retry.`, 'warn');
             showDemoResults();
         } else {
             showToast(`Detection error: ${err.message}`, 'error');
@@ -293,9 +325,57 @@ window.runAIDetection = async function () {
     }
 };
 
+/* ── Poll async video job until done ─────────────── */
+async function _pollVideoJob(jobId, progressBar, stageLabel) {
+    const POLL_MS   = 2000;   // poll every 2 seconds
+    const TIMEOUT_S = 1800;   // give up after 30 min
+    const started   = Date.now();
+
+    stageLabel.textContent  = 'Video queued — waiting for worker...';
+    progressBar.style.width = '8%';
+
+    while (true) {
+        if ((Date.now() - started) / 1000 > TIMEOUT_S) {
+            throw new Error('Video processing timed out after 30 minutes.');
+        }
+
+        await sleep(POLL_MS);
+
+        let status;
+        try {
+            const r = await fetch(`${API_BASE}/job/${jobId}/status`);
+            if (!r.ok) throw new Error(`Poll failed: HTTP ${r.status}`);
+            status = await r.json();
+        } catch (e) {
+            console.warn('[poll] fetch error:', e.message);
+            continue;
+        }
+
+        const pct = status.progress_pct || 0;
+        // Reserve 8–95% for actual processing, 5% for upload, 5% for render
+        progressBar.style.width = Math.max(8, Math.min(95, 8 + pct * 0.87)) + '%';
+
+        if (status.status === 'running' || status.status === 'queued') {
+            const frameInfo = status.current_file || 'processing...';
+            const elapsed   = status.elapsed_sec ? ` (${status.elapsed_sec}s)` : '';
+            stageLabel.textContent = `Analyzing video: ${frameInfo}${elapsed}`;
+        }
+
+        if (status.status === 'done') {
+            if (!status.results) throw new Error('Job done but no results returned.');
+            return status.results;
+        }
+
+        if (status.status === 'error') {
+            throw new Error(status.error || 'Video processing failed on server.');
+        }
+    }
+}
+
 /* ── Show real results from API ─────────────────── */
 let _galleryImages = [];  // batch images array
 let _galleryIdx = 0;      // current gallery index
+let _galleryIsVideo = false;
 
 function showResults(data) {
     const resultsEl = document.getElementById('results-content');
@@ -306,10 +386,13 @@ function showResults(data) {
     const isBatch = data.annotated_images && data.annotated_images.length > 1;
 
     if (isBatch) {
-        // Batch mode — set up gallery
+        // Batch mode (images) or video frames — set up gallery
         _galleryImages = data.annotated_images;
         _galleryIdx = 0;
         galleryNav.style.display = 'block';
+        // Show timestamp label for video frames
+        const isVideo = !!data.is_video;
+        _galleryIsVideo = isVideo;
         showGalleryImage(0);
     } else {
         // Single image mode
@@ -324,6 +407,9 @@ function showResults(data) {
 
     // Render per-object detection list
     renderDetectionList(data.detections);
+
+    // Update 3D Model Batch Detections
+    render3DDetections(data);
 
     // Update confidence bar
     const avgConf = data.summary.avg_confidence;
@@ -340,24 +426,193 @@ function showResults(data) {
     resultsEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+/* ── 3D View Tab Switching & Rendering ── */
+window.switchViewTab = function (tabId) {
+    const btn2d = document.getElementById('tab-2d');
+    const btn3d = document.getElementById('tab-3d');
+    const view2d = document.getElementById('view-2d');
+    const view3d = document.getElementById('view-3d');
+
+    if (tabId === '2d') {
+        btn2d.classList.add('active');
+        btn2d.style.fontWeight = 'bold';
+        btn2d.style.color = 'var(--teal)';
+        btn2d.style.background = 'var(--bg-2)';
+        btn2d.style.border = '1px solid var(--teal)';
+
+        btn3d.classList.remove('active');
+        btn3d.style.fontWeight = 'normal';
+        btn3d.style.color = 'var(--text-3)';
+        btn3d.style.background = 'var(--bg-panel)';
+        btn3d.style.border = '1px solid var(--border-color)';
+
+        view2d.style.display = 'block';
+        view3d.style.display = 'none';
+    } else {
+        btn3d.classList.add('active');
+        btn3d.style.fontWeight = 'bold';
+        btn3d.style.color = 'var(--teal)';
+        btn3d.style.background = 'var(--bg-2)';
+        btn3d.style.border = '1px solid var(--teal)';
+
+        btn2d.classList.remove('active');
+        btn2d.style.fontWeight = 'normal';
+        btn2d.style.color = 'var(--text-3)';
+        btn2d.style.background = 'var(--bg-panel)';
+        btn2d.style.border = '1px solid var(--border-color)';
+
+        view3d.style.display = 'block';
+        view2d.style.display = 'none';
+    }
+};
+
+function render3DDetections(data) {
+    const blipsContainer = document.getElementById('threed-blips');
+    const countLabel = document.getElementById('threed-batch-count');
+    if (!blipsContainer || !countLabel) return;
+
+    blipsContainer.innerHTML = '';
+
+    const isBatch = data.annotated_images && data.annotated_images.length > 1;
+    let allDetections = [];
+    if (isBatch) {
+        data.annotated_images.forEach(imgData => {
+            if (imgData.detections) allDetections.push(...imgData.detections);
+        });
+    } else {
+        allDetections = data.detections || [];
+    }
+    countLabel.textContent = allDetections.length;
+
+    const hullBounds = { minX: 26, maxX: 74, minY: 11, maxY: 49 };
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    const getSymbol = (className, cx, cy, color, conf, det) => {
+        const key = (className || '').toLowerCase();
+        const s = 3.8;
+        const g = document.createElementNS(SVG_NS, 'g');
+        g.setAttribute('transform', `translate(${cx},${cy})`);
+
+        // Pulse ring
+        const ring = document.createElementNS(SVG_NS, 'circle');
+        ring.setAttribute('cx', 0); ring.setAttribute('cy', 0);
+        ring.setAttribute('r', s + 1.5);
+        ring.setAttribute('fill', 'none');
+        ring.setAttribute('stroke', color);
+        ring.setAttribute('stroke-width', '0.5');
+        ring.setAttribute('opacity', '0.35');
+        if (conf > 0.7) {
+            const anim = document.createElementNS(SVG_NS, 'animate');
+            anim.setAttribute('attributeName', 'r');
+            anim.setAttribute('values', `${s};${s+3};${s}`);
+            anim.setAttribute('dur', conf > 0.85 ? '1.2s' : '2s');
+            anim.setAttribute('repeatCount', 'indefinite');
+            ring.appendChild(anim);
+        }
+        g.appendChild(ring);
+
+        let shape;
+
+        if (key.includes('paint_peel') || key.includes('paint')) {
+            // Lightning bolt = paint peel danger
+            shape = document.createElementNS(SVG_NS, 'polygon');
+            shape.setAttribute('points', `0,${-s} ${-s*0.4},${-s*0.1} ${-s*0.1},${-s*0.1} ${-s*0.5},${s} ${s*0.4},${s*0.1} ${s*0.1},${s*0.1}`);
+            shape.setAttribute('fill', color);
+            shape.setAttribute('opacity', '0.95');
+        } else if (key.includes('biofouling') || key.includes('fouling')) {
+            // Leaf drop = biofouling
+            shape = document.createElementNS(SVG_NS, 'path');
+            shape.setAttribute('d', `M 0,${s} Q ${s*1.1},${s*0.2} 0,${-s} Q ${-s*1.1},${s*0.2} 0,${s}`);
+            shape.setAttribute('fill', color);
+            shape.setAttribute('opacity', '0.9');
+            const stem = document.createElementNS(SVG_NS, 'line');
+            stem.setAttribute('x1', 0); stem.setAttribute('y1', s);
+            stem.setAttribute('x2', 0); stem.setAttribute('y2', s + 2);
+            stem.setAttribute('stroke', color); stem.setAttribute('stroke-width', '0.7');
+            g.appendChild(stem);
+        } else if (key.includes('anode')) {
+            // Circle = anode marker
+            shape = document.createElementNS(SVG_NS, 'circle');
+            shape.setAttribute('cx', '0');
+            shape.setAttribute('cy', '0');
+            shape.setAttribute('r', s);
+            shape.setAttribute('fill', 'none');
+            shape.setAttribute('stroke', color);
+            shape.setAttribute('stroke-width', '1.5');
+        } else if (key.includes('hull') || key.includes('corrosion')) {
+            // Checkmark = corrosion marker
+            shape = document.createElementNS(SVG_NS, 'polyline');
+            shape.setAttribute('points', `${-s},0 ${-s*0.2},${s*0.7} ${s},${-s*0.7}`);
+            shape.setAttribute('fill', 'none');
+            shape.setAttribute('stroke', color);
+            shape.setAttribute('stroke-width', '1.5');
+            shape.setAttribute('stroke-linecap', 'round');
+            shape.setAttribute('stroke-linejoin', 'round');
+        } else {
+            // Default diamond
+            shape = document.createElementNS(SVG_NS, 'polygon');
+            shape.setAttribute('points', `0,${-s} ${s},0 0,${s} ${-s},0`);
+            shape.setAttribute('fill', color);
+            shape.setAttribute('opacity', '0.85');
+        }
+        g.appendChild(shape);
+
+        // Confidence % label below symbol
+        const label = document.createElementNS(SVG_NS, 'text');
+        label.setAttribute('x', 0); label.setAttribute('y', s + 4.5);
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('font-size', '2.4');
+        label.setAttribute('fill', color);
+        label.setAttribute('font-family', 'monospace');
+        label.setAttribute('opacity', '0.9');
+        label.textContent = Math.round(conf * 100) + '%';
+        g.appendChild(label);
+
+        // Species label if present
+        if (det && det.species) {
+            const sl = document.createElementNS(SVG_NS, 'text');
+            sl.setAttribute('x', 0); sl.setAttribute('y', s + 7.5);
+            sl.setAttribute('text-anchor', 'middle');
+            sl.setAttribute('font-size', '1.8');
+            sl.setAttribute('fill', '#fff');
+            sl.setAttribute('font-family', 'monospace');
+            sl.setAttribute('opacity', '0.75');
+            sl.textContent = det.species.toUpperCase();
+            g.appendChild(sl);
+        }
+
+        return g;
+    };
+
+    allDetections.forEach((det, i) => {
+        const rx = hullBounds.minX + (Math.abs(Math.sin(i * 12.3 + 1.7)) * (hullBounds.maxX - hullBounds.minX));
+        const ry = hullBounds.minY + (Math.abs(Math.cos(i * 7.4 + 0.9)) * (hullBounds.maxY - hullBounds.minY));
+        const color = classColor(det.class_name);
+        const group = getSymbol(normalizeClassName(det.class_name), rx, ry, color, det.confidence, det);
+        blipsContainer.appendChild(group);
+    });
+}
+
 /* ── Gallery navigation for batch images ── */
 function showGalleryImage(idx) {
     if (!_galleryImages.length) return;
     _galleryIdx = Math.max(0, Math.min(idx, _galleryImages.length - 1));
     const item = _galleryImages[_galleryIdx];
 
-    // Draw on canvas
     if (item.image) {
         drawAnnotatedImage(item.image, item.detections || []);
     }
 
-    // Update counter and filename
-    const counter = document.getElementById('gallery-counter');
+    const counter  = document.getElementById('gallery-counter');
     const filename = document.getElementById('gallery-filename');
     if (counter) counter.textContent = `${_galleryIdx + 1} / ${_galleryImages.length}`;
-    if (filename) filename.textContent = item.filename || '';
+    if (filename) {
+        // Show timestamp for video frames, filename for batch images
+        filename.textContent = item.timestamp_label
+            ? `⏱ ${item.timestamp_label}  —  ${item.detections ? item.detections.length : 0} detection(s)`
+            : (item.filename || '');
+    }
 
-    // Disable prev/next at boundaries
     const prevBtn = document.getElementById('gallery-prev');
     const nextBtn = document.getElementById('gallery-next');
     if (prevBtn) prevBtn.disabled = _galleryIdx === 0;
@@ -433,7 +688,7 @@ function drawBoxesOverUpload(detections) {
             });
 
             // Label
-            const label = `${det.class_name}  ${confPct}`;
+            const label = `${normalizeClassName(det.class_name)}  ${confPct}`;
             ctx.font = 'bold 11px "JetBrains Mono", monospace';
             const tw = ctx.measureText(label).width + 14;
             const lh = 18;
@@ -472,58 +727,41 @@ function renderDetectionList(detections) {
         return;
     }
 
-    // Group by class to show counts
-    const groups = {};
-    detections.forEach(d => {
-        const key = d.class_name;
-        if (!groups[key]) groups[key] = { name: key, confs: [], total: 0 };
-        groups[key].confs.push(d.confidence);
-        groups[key].total++;
-    });
-
-    Object.values(groups).forEach(g => {
-        const avgConf = g.confs.reduce((a, b) => a + b, 0) / g.confs.length;
-        const confPct = Math.round(avgConf * 100);
-        const color = classColor(g.name);
-
-        const row = document.createElement('div');
-        row.className = 'detection-row';
-
-        row.innerHTML = `
-      <div class="dr-dot" style="background:${color};box-shadow:0 0 8px ${color}40;"></div>
-      <div class="dr-label">${g.name}</div>
-      <div class="dr-count">${g.total} detected</div>
-      <div class="dr-conf" style="color:${color};">${confPct}%</div>
-    `;
-        list.appendChild(row);
-    });
-
     // Individual boxes with per-detection confidence
     const perBox = document.getElementById('per-detection-boxes');
     if (!perBox) return;
     perBox.innerHTML = '';
 
-    detections.forEach((d, i) => {
-        const color = classColor(d.class_name);
-        const confPct = Math.round(d.confidence * 100);
-        const box = document.createElement('div');
-        box.className = 'per-det-item';
-        box.style.cssText = `
-      display:flex;align-items:center;gap:10px;
-      padding:8px 12px;margin-bottom:4px;
-      border-left:2px solid ${color};
-      background:rgba(0,0,0,0.2);
-      font-family:var(--font-mono);font-size:12px;
-    `;
-        box.innerHTML = `
-      <span style="color:${color};min-width:18px;font-weight:700;">#${i + 1}</span>
-      <span style="color:var(--text-2);flex:1;">${d.class_name}</span>
-      <span style="
-        padding:2px 8px;background:${color}22;border:1px solid ${color}44;
-        border-radius:2px;color:${color};font-weight:700;
-      ">${confPct}%</span>
-    `;
-        perBox.appendChild(box);
+    detections.forEach(det => {
+        const el = document.createElement('div');
+        el.className = 'det-item';
+        const color = classColor(det.class_name);
+        const pct = Math.round(det.confidence * 100) + '%';
+
+        let speciesHtml = '';
+        if (det.species) {
+            const speciesPct = Math.round(det.species_confidence * 100) + '%';
+            speciesHtml = `
+            <div style="font-size:10px; color:var(--text-2); margin-top:2px; font-family:var(--font-mono);">
+              ↳ ResNet Species: <span style="color:#fff; font-weight:bold;">${det.species.toUpperCase()}</span> (${speciesPct})
+            </div>`;
+        }
+
+        el.innerHTML = `
+            <div>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span class="det-dot" style="background:${color};box-shadow:0 0 8px ${color}"></span>
+                <span style="font-weight:600;font-size:13px;">${normalizeClassName(det.class_name)}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-3);margin-top:4px;">Pipeline Confidence: ${pct}</div>
+              ${speciesHtml}
+            </div>
+            <div style="text-align:right;">
+               <div style="font-size:11px;color:var(--text-3);font-family:var(--font-mono);">Bounding Box Area</div>
+               <div style="font-size:12px;color:#fff;">${Math.round(det.x2 - det.x1)}x${Math.round(det.y2 - det.y1)}</div>
+            </div>
+        `;
+        list.appendChild(el);
     });
 }
 
@@ -589,10 +827,10 @@ function populateAndShowReport(data) {
         const normalizeReportClass = (name) => {
             const key = (name || '').toLowerCase().trim();
             if (!key) return key;
-            if (key.includes('corrosion')) return 'corrosion';
-            if (key.includes('marine') && key.includes('growth')) return 'marine growth';
-            if (key.includes('debris')) return 'debris';
-            if (key.includes('healthy')) return 'healthy';
+            if (key.includes('biofouling') || key.includes('fouling')) return 'biofouling';
+            if (key.includes('paint_peel') || key.includes('paint')) return 'paint_peel';
+            if (key.includes('anode')) return 'anode';
+            if (key.includes('hull') || key.includes('corrosion')) return 'corrosion';
             return key;
         };
         const groups = {};
@@ -626,42 +864,32 @@ function populateAndShowReport(data) {
 }
 
 function updateReportSummaryCounts(detections) {
-    const counts = {
-        corrosion: 0,
-        'marine growth': 0,
-        debris: 0,
-        healthy: 0,
-        'healthy surface': 0,
-    };
+    const grid = document.getElementById('rpt-summary-grid');
+    if (!grid) return;
 
-    const normalizeReportClass = (name) => {
-        const key = (name || '').toLowerCase().trim();
-        if (!key) return key;
-        if (key.includes('corrosion') || key.includes('corrision')) return 'corrosion';
-        if (key.includes('marine') && key.includes('growth')) return 'marine growth';
-        if (key.includes('debris')) return 'debris';
-        if (key.includes('healthy')) return 'healthy';
-        return key;
-    };
+    // Always show all 4 classes, even if count is 0
+    const CLASSES = [
+        { key: 'corrosion',  label: 'Corrosion',  color: '#e74c3c' },
+        { key: 'biofouling', label: 'Biofouling', color: '#f0a500' },
+        { key: 'anode',      label: 'Anode',      color: '#00d4e8' },
+        { key: 'paint_peel', label: 'Paint Peel', color: '#e74c3c' },
+    ];
 
-    detections.forEach(d => {
-        const key = normalizeReportClass(d.class_name);
-        if (counts[key] !== undefined) {
-            counts[key] += 1;
-        }
+    const counts = { corrosion: 0, biofouling: 0, anode: 0, paint_peel: 0 };
+
+    (detections || []).forEach(d => {
+        const k = (d.class_name || '').toLowerCase().trim();
+        if (k === 'hull' || k === 'corrosion')                        counts.corrosion++;
+        else if (k === 'biofouling' || k.includes('fouling'))         counts.biofouling++;
+        else if (k === 'anode')                                        counts.anode++;
+        else if (k === 'paint_peel' || k.includes('paint'))           counts.paint_peel++;
     });
 
-    const healthyCount = counts.healthy + counts['healthy surface'];
-
-    const setCount = (id, val) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = val;
-    };
-
-    setCount('rpt-count-corrosion', counts.corrosion);
-    setCount('rpt-count-growth', counts['marine growth']);
-    setCount('rpt-count-debris', counts.debris);
-    setCount('rpt-count-healthy', healthyCount);
+    grid.innerHTML = CLASSES.map(c => `
+        <div class="rpt-summary-item">
+            <div class="rsi-val" style="color:${c.color};">${counts[c.key]}</div>
+            <div class="rsi-label">${c.label}</div>
+        </div>`).join('');
 }
 
 function updateReportAnnotatedImage(data) {
@@ -749,7 +977,7 @@ function updateReportAnnotatedImage(data) {
             const label = document.createElement('div');
             label.className = 'rpt-bbox-label';
             label.style.cssText = `background:${color};color:#0a1520;`;
-            label.textContent = `${det.class_name} ${confPct}`;
+            label.textContent = `${normalizeClassName(det.class_name)} ${confPct}`;
             box.appendChild(label);
 
             layer.appendChild(box);
@@ -762,12 +990,12 @@ function updateReportAnnotatedImage(data) {
 
 /* ── Demo fallback (when API is offline) ────────── */
 const DEMO_DETECTIONS = [
-    { class_name: 'Corrosion', confidence: 0.94, x1: 58, y1: 62, x2: 198, y2: 222 },
-    { class_name: 'Corrosion', confidence: 0.91, x1: 328, y1: 305, x2: 448, y2: 445 },
-    { class_name: 'Marine Growth', confidence: 0.88, x1: 554, y1: 155, x2: 668, y2: 277 },
-    { class_name: 'Debris', confidence: 0.81, x1: 420, y1: 40, x2: 524, y2: 152 },
-    { class_name: 'Healthy Surface', confidence: 0.99, x1: 618, y1: 318, x2: 778, y2: 458 },
-    { class_name: 'Marine Growth', confidence: 0.85, x1: 110, y1: 380, x2: 244, y2: 502 },
+    { class_name: 'biofouling',  confidence: 0.91, x1: 58,  y1: 62,  x2: 198, y2: 222 },
+    { class_name: 'paint_peel', confidence: 0.88, x1: 328, y1: 305, x2: 448, y2: 445 },
+    { class_name: 'biofouling', confidence: 0.85, x1: 554, y1: 155, x2: 668, y2: 277 },
+    { class_name: 'anode',      confidence: 0.94, x1: 420, y1: 40,  x2: 524, y2: 152 },
+    { class_name: 'corrosion',  confidence: 0.99, x1: 618, y1: 318, x2: 778, y2: 458 },
+    { class_name: 'paint_peel', confidence: 0.81, x1: 110, y1: 380, x2: 244, y2: 502 },
 ];
 
 function showDemoResults() {
@@ -840,3 +1068,315 @@ function showToast(msg, type = 'info') {
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 5000);
 }
+
+/* ── 3D Interaction Logic ── */
+let threedInteracted = false;
+let threedRotZ = 0;
+let threedIsDragging = false;
+let threedStartX = 0;
+
+function init3DInteraction() {
+    const svg = document.getElementById('threed-svg');
+    if (!svg) return;
+
+    function animate() {
+        if (!threedInteracted) {
+            threedRotZ += 0.5; // Clockwise rotation
+            svg.style.transform = `rotateX(60deg) rotateZ(${threedRotZ}deg)`;
+        }
+        requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+
+    svg.addEventListener('mousedown', (e) => {
+        threedIsDragging = true;
+        threedInteracted = true;
+        threedStartX = e.clientX;
+        svg.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (!threedIsDragging) return;
+        const deltaX = e.clientX - threedStartX;
+        threedRotZ += deltaX * 0.5;
+        svg.style.transform = `rotateX(60deg) rotateZ(${threedRotZ}deg)`;
+        threedStartX = e.clientX;
+    });
+
+    window.addEventListener('mouseup', () => {
+        if (!threedIsDragging) return;
+        threedIsDragging = false;
+        if (svg) svg.style.cursor = 'grab';
+        // Resume auto-rotation after 2 seconds of inactivity
+        setTimeout(() => { if (!threedIsDragging) threedInteracted = false; }, 2000);
+    });
+
+    // Also handle touch events for mobile
+    svg.addEventListener('touchstart', (e) => {
+        threedIsDragging = true;
+        threedInteracted = true;
+        threedStartX = e.touches[0].clientX;
+    });
+    window.addEventListener('touchmove', (e) => {
+        if (!threedIsDragging) return;
+        const deltaX = e.touches[0].clientX - threedStartX;
+        threedRotZ += deltaX * 0.5;
+        svg.style.transform = `rotateX(60deg) rotateZ(${threedRotZ}deg)`;
+        threedStartX = e.touches[0].clientX;
+    });
+    window.addEventListener('touchend', () => {
+        if (!threedIsDragging) return;
+        threedIsDragging = false;
+        setTimeout(() => { if (!threedIsDragging) threedInteracted = false; }, 2000);
+    });
+}
+document.addEventListener('DOMContentLoaded', init3DInteraction);
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BULK / TB-SCALE UPLOAD  —  uses POST /batch-job + GET /job/{id}/status
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+let _bulkPollTimer   = null;   // setInterval handle
+let _activeBulkJobId = null;   // current job being polled
+
+/* ── Inject the bulk progress panel into the page (once) ──────────────────── */
+(function injectBulkPanel() {
+    if (document.getElementById('bulk-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'bulk-panel';
+    panel.style.cssText = `
+        display:none;
+        position:fixed;bottom:80px;right:28px;z-index:9990;
+        width:360px;background:var(--bg-panel,#0d1b2a);
+        border:1px solid var(--teal,#00c8b0);border-radius:8px;
+        padding:18px 20px;box-shadow:0 8px 40px rgba(0,0,0,0.7);
+        font-family:var(--font-mono,'JetBrains Mono',monospace);font-size:12px;
+        color:var(--text-1,#e0f0ff);
+    `;
+    panel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <span style="font-size:13px;font-weight:700;color:var(--teal,#00c8b0);">
+                🚀 Bulk Job Processing
+            </span>
+            <button id="bulk-panel-close" onclick="closeBulkPanel()"
+                style="background:none;border:none;color:var(--text-3,#7a9eb5);font-size:16px;cursor:pointer;line-height:1;">✕</button>
+        </div>
+
+        <!-- Job ID row -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--text-3,#7a9eb5);">Job ID</span>
+            <span id="bulk-job-id" style="color:var(--teal,#00c8b0);letter-spacing:0.5px;">—</span>
+        </div>
+
+        <!-- Status row -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--text-3,#7a9eb5);">Status</span>
+            <span id="bulk-status" style="color:#f0a500;text-transform:uppercase;">queued</span>
+        </div>
+
+        <!-- Files row -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--text-3,#7a9eb5);">Files</span>
+            <span id="bulk-files">0 / 0</span>
+        </div>
+
+        <!-- Current file -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--text-3,#7a9eb5);">Current</span>
+            <span id="bulk-current" style="color:var(--text-2,#aaccdd);max-width:200px;
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;">—</span>
+        </div>
+
+        <!-- Detections so far -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--text-3,#7a9eb5);">Detections</span>
+            <span id="bulk-dets" style="color:var(--teal,#00c8b0);">0</span>
+        </div>
+
+        <!-- Elapsed time -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:14px;">
+            <span style="color:var(--text-3,#7a9eb5);">Elapsed</span>
+            <span id="bulk-elapsed">0s</span>
+        </div>
+
+        <!-- Progress bar -->
+        <div style="background:rgba(255,255,255,0.07);border-radius:4px;height:6px;margin-bottom:6px;">
+            <div id="bulk-bar" style="height:6px;border-radius:4px;background:var(--teal,#00c8b0);
+                width:0%;transition:width 0.5s ease;"></div>
+        </div>
+        <div style="text-align:right;color:var(--text-3,#7a9eb5);font-size:11px;">
+            <span id="bulk-pct">0%</span>
+        </div>
+
+        <!-- ETA -->
+        <div id="bulk-eta-row" style="margin-top:8px;color:var(--text-3,#7a9eb5);font-size:11px;text-align:center;"></div>
+
+        <!-- Done message -->
+        <div id="bulk-done-msg" style="display:none;margin-top:12px;text-align:center;
+            padding:8px;background:rgba(0,200,176,0.1);border:1px solid var(--teal,#00c8b0);
+            border-radius:4px;color:var(--teal,#00c8b0);font-size:12px;">
+            ✅ Processing complete! Results loaded below.
+        </div>
+    `;
+    document.body.appendChild(panel);
+})();
+
+
+/* ── Open/close the panel ─────────────────────────────────────────────────── */
+function openBulkPanel()  { const p = document.getElementById('bulk-panel'); if (p) p.style.display = 'block'; }
+window.closeBulkPanel = function() {
+    const p = document.getElementById('bulk-panel');
+    if (p) p.style.display = 'none';
+    // Keep polling in background even if panel is hidden
+};
+
+
+/* ── Update panel fields from a job status object ───────────────────────────── */
+function _updateBulkPanel(job) {
+    const $ = id => document.getElementById(id);
+    if (!$('bulk-panel')) return;
+
+    const statusColors = { queued: '#f0a500', running: '#00c8b0', done: '#00c8b0', error: '#e74c3c' };
+    $('bulk-job-id').textContent  = job.job_id || '—';
+    $('bulk-status').textContent  = job.status || '—';
+    $('bulk-status').style.color  = statusColors[job.status] || '#f0a500';
+    $('bulk-files').textContent   = `${job.processed_files} / ${job.total_files}`;
+    $('bulk-current').textContent = job.current_file || '—';
+    $('bulk-dets').textContent    = job.detections_so_far || 0;
+    $('bulk-elapsed').textContent = `${job.elapsed_sec || 0}s`;
+
+    const pct = job.progress_pct || 0;
+    $('bulk-bar').style.width = pct + '%';
+    $('bulk-pct').textContent = pct + '%';
+
+    // ETA estimate
+    const etaRow = $('bulk-eta-row');
+    if (job.status === 'running' && job.elapsed_sec > 2 && job.processed_files > 0) {
+        const rate = job.processed_files / job.elapsed_sec;             // files/sec
+        const remaining = (job.total_files - job.processed_files) / rate;
+        etaRow.textContent = `ETA ≈ ${Math.ceil(remaining)}s  (${rate.toFixed(1)} files/s)`;
+    } else {
+        etaRow.textContent = '';
+    }
+
+    // Done state
+    if (job.status === 'done') {
+        $('bulk-done-msg').style.display = 'block';
+    }
+}
+
+
+/* ── Poll job status every 2 seconds ─────────────────────────────────────── */
+function _startPolling(jobId) {
+    _activeBulkJobId = jobId;
+    if (_bulkPollTimer) clearInterval(_bulkPollTimer);
+
+    _bulkPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch(`${API_BASE}/job/${jobId}/status`);
+            if (!resp.ok) return;
+            const job = await resp.json();
+
+            _updateBulkPanel(job);
+
+            if (job.status === 'done') {
+                clearInterval(_bulkPollTimer);
+                _bulkPollTimer = null;
+                showToast(`✅ Batch job done! ${job.total_files} files, ${job.detections_so_far} detections.`, 'info');
+                // Show results in main dashboard
+                if (job.results) {
+                    const emptyState   = document.getElementById('empty-state');
+                    const loadingState = document.getElementById('loading-state');
+                    if (emptyState)   emptyState.style.display = 'none';
+                    if (loadingState) loadingState.style.display = 'none';
+                    showResults(job.results);
+                }
+            } else if (job.status === 'error') {
+                clearInterval(_bulkPollTimer);
+                _bulkPollTimer = null;
+                showToast(`❌ Batch job failed: ${job.error}`, 'error');
+            }
+        } catch (e) {
+            // Network error — keep polling, API may be momentarily busy
+        }
+    }, 2000);
+}
+
+
+/* ── Submit batch job to backend ─────────────────────────────────────────── */
+window.runBulkDetection = async function(inputFiles) {
+    const files = inputFiles || uploadedFiles;
+    if (!files || files.length === 0) {
+        showToast('Please select files to upload first.', 'warn');
+        return;
+    }
+
+    showToast(`Submitting ${files.length} files to batch queue…`, 'info');
+    openBulkPanel();
+
+    // Reset panel
+    const doneMsg = document.getElementById('bulk-done-msg');
+    if (doneMsg) doneMsg.style.display = 'none';
+
+    try {
+        const formData = new FormData();
+        for (const f of files) {
+            formData.append('files', f);
+        }
+
+        const resp = await fetch(`${API_BASE}/batch-job`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+
+        const job = await resp.json();
+        console.log('[BULK] Job submitted:', job.job_id);
+
+        // Initial panel state
+        _updateBulkPanel({
+            job_id:           job.job_id,
+            status:           'queued',
+            total_files:      job.total_files,
+            processed_files:  0,
+            current_file:     '',
+            detections_so_far: 0,
+            progress_pct:     0,
+            elapsed_sec:      0,
+        });
+
+        _startPolling(job.job_id);
+
+    } catch (e) {
+        showToast(`Batch submission failed: ${e.message}`, 'error');
+        if (document.getElementById('bulk-panel')) {
+            document.getElementById('bulk-panel').style.display = 'none';
+        }
+    }
+};
+
+
+/* ── Bulk mode button handler ("Bulk (TB)" button in HTML) ───────────────── */
+window.setUploadType = (function(_orig) {
+    return function(type) {
+        _orig(type);
+        if (type === 'bulk') {
+            // Automatically run bulk detection after file selection completes
+            const waitForFiles = setInterval(() => {
+                if (uploadedFiles.length > 0) {
+                    clearInterval(waitForFiles);
+                    window.runBulkDetection(uploadedFiles);
+                }
+            }, 500);
+            // Clear wait after 30s to avoid leak
+            setTimeout(() => clearInterval(waitForFiles), 30000);
+        }
+    };
+})(window.setUploadType);
+

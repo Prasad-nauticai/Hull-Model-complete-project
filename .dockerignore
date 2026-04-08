@@ -1,0 +1,30 @@
+**/.git
+**/.venv
+**/.env
+**/__pycache__
+**/*.pyc
+**/.vscode
+**/.idea
+
+# Exclude large development and UI directories
+FInalUI/
+species_models-20260311T141438Z-1-001/
+My Project-20260311T133852Z-1-001/
+runs/
+
+# Exclude ALL models by default, then manually include the active ones
+*.pt
+!biofouling_best.pt
+!resnet50_species_full_model.pt
+
+# Exclude frontend UI files
+css/
+js/
+index.html
+admin.html
+image.png
+
+# Miscellaneous
+*~
+*.swp
+*.log
