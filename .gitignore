@@ -1,5 +1,6 @@
 # Environment — never commit credentials
 .env
+.env.local
 
 # Model files — too large for GitHub (use Releases)
 *.pt
@@ -28,7 +29,7 @@ backend.log
 frontend.log
 backend_runtime.*.log
 
-# Temp scripts (one-time use)
+# Temp/one-time scripts
 check_models.py
 check_classes.py
 check_healthy_surface.py
@@ -44,7 +45,7 @@ logo_b64.txt
 logo_b64_uri.txt
 convert_model.py
 
-# Large zip/archives
+# Large archives
 *.zip
 nauticai_production.zip
 
@@ -59,10 +60,10 @@ Thumbs.db
 # VS Code
 .vscode/
 
-# Runs (YOLO output)
+# YOLO output runs
 runs/
 
-# Uploads
+# Uploads folder
 uploads/
 
 # Build artifacts
@@ -70,12 +71,13 @@ build_log.txt
 clog.json
 cloud_shell_error.txt
 
-# Species model training artifacts
+# Training artifacts
 species_models-*/
 My\ Project-*/
+"My Project-*"
 
 # FInalUI (Streamlit — separate project)
 FInalUI/
 
-# nauticai_production (old snapshot — not needed)
+# nauticai_production (old snapshot)
 nauticai_production/
